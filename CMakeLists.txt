@@ -4,6 +4,15 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
 	message(FATAL_ERROR "Prevented in-tree build.")
 endif()
 
+# Check ScriptHookV.lib and natives.h existence
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/lib/ScriptHookV.lib")
+	message(FATAL_ERROR "Missing ScriptHookV.lib!")
+endif()
+
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/inc/natives.h")
+	message(FATAL_ERROR "Missing natives.h!")
+endif()
+
 # For LuaJIT compilation
 include(ExternalProject)
 
