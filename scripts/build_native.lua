@@ -3,6 +3,10 @@
 local arg = {...}
 local natives = assert(io.open(assert(arg[1], "need input path"), "rb"))
 
+if arg[2] then
+	io.output(arg[2])
+end
+
 local objectType = {
 	"Any",
 	"Hash",
@@ -227,14 +231,13 @@ local function parseFunction(namespace, line)
 			if v.out then
 				-- union.ptr = objects + <index>
 				io.write("\tunion.ptr = objects + ", v.index, "\n")
-				-- ScriptHookV.nativePush64(union.value)
-				io.write("\tScriptHookV.nativePush64(union.value)\n")
 			else
 				-- union.object.<typelower> = arg
 				io.write("\tunion.object.", v.type:lower(), " = ", v.name, "\n")
-				-- ScriptHookV.nativePush64(union.value)
-				io.write("\tScriptHookV.nativePush64(union.value)\n")
 			end
+
+			-- ScriptHookV.nativePush64(union.value)
+			io.write("\tScriptHookV.nativePush64(union.value)\n")
 		-- Is string?
 		elseif v.type == "char" and v.pointer then
 			-- union.ptr = arg
@@ -272,8 +275,11 @@ local function parseFunction(namespace, line)
 			-- ScriptHookV.nativePush64(union.value)
 			io.write("\tScriptHookV.nativePush64(union.value)\n")
 		elseif v.type == "Vector3" and v.pointer then
-			-- vectors[<index>] = arg
-			io.write("\tvectors[", v.index, "] = ", v.name, "\n")
+			if not(v.out) then
+				-- vectors[<index>] = arg
+				io.write("\tvectors[", v.index, "] = ", v.name, "\n")
+			end
+
 			-- union.ptr = vectors + <index>
 			io.write("\tunion.ptr = vectors + ", v.index, "\n")
 			-- ScriptHookV.nativePush64(union.value)
@@ -381,6 +387,7 @@ for line in natives:lines() do
 		io.write(dups, "\n")
 		io.write("-- NAMESPACE ", currentNamespace, " --\n")
 		io.write(dups, "\n")
+		io.write("-- luacheck: globals ", currentNamespace, "\n")
 		io.write(currentNamespace, " = {}\n")
 	elseif currentNamespace then
 		if line == "}" then

@@ -7,7 +7,7 @@ endif()
 # For LuaJIT compilation
 include(ExternalProject)
 
-project(ljscripthook LANGUAGES C)
+project(ljscripthook LANGUAGES CXX)
 
 # We only support MSVC
 if (MSVC)
@@ -67,7 +67,7 @@ endif()
 
 # Test x64 target
 try_compile(IS_64BIT ${CMAKE_CURRENT_BINARY_DIR}
-	SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/check64.c
+	SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/check64.cpp
 	COMPILE_DEFINITIONS -DCMAKE_TRY_COMPILE
 )
 if (NOT IS_64BIT)
@@ -81,8 +81,11 @@ if (NOT LUA_EXE)
 		DOC "Lua executable to use to generate definitions."
 	)
 endif()
+
 if (NOT LUA_EXE)
 	message(STATUS "No Lua interpreter found. Provided LuaJIT will be used.")
+else()
+	message(STATUS "Lua interpreter: ${LUA_EXE}")
 endif()
 
 # Custom LuaJIT build
@@ -91,7 +94,7 @@ endif()
 # and we don't want to modify the original source tree, so
 # we copy it.
 set(MEGA_LUAJIT_SOURCE_DIR ${CMAKE_BINARY_DIR}/LuaJIT)
-file(COPY LuaJIT DESTINATION ${MEGA_LUAJIT_SOURCE_DIR})
+file(COPY LuaJIT DESTINATION ${CMAKE_BINARY_DIR})
 set(MEGA_LUAJIT_BUILD_BAT "
 	@echo off
 	call \"${MEGA_MSVC_VCVARSALL_BAT}\" ${MEGA_MSVC_VCVARSALL_BAT_ARG}
@@ -100,17 +103,40 @@ set(MEGA_LUAJIT_BUILD_BAT "
 	msvcbuild.bat %1 %2
 ")
 file(WRITE ${MEGA_LUAJIT_SOURCE_DIR}/megabuild.bat ${MEGA_LUAJIT_BUILD_BAT})
+set(MEGA_LUAJIT_LIB ${MEGA_LUAJIT_SOURCE_DIR}/src/lua51.lib)
+set(MEGA_LUAJIT_DLL ${MEGA_LUAJIT_SOURCE_DIR}/src/lua51.dll)
 ExternalProject_Add(luajit
 	SOURCE_DIR ${MEGA_LUAJIT_SOURCE_DIR}
 	BUILD_IN_SOURCE 1
 	CONFIGURE_COMMAND ""
 	BUILD_COMMAND "${MEGA_LUAJIT_SOURCE_DIR}/megabuild.bat" $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:debug> $<$<NOT:$<CONFIG:Debug>>:amalg>
+	INSTALL_COMMAND ""
+	BUILD_BYPRODUCTS ${MEGA_LUAJIT_LIB} ${MEGA_LUAJIT_DLL} ${MEGA_LUAJIT_SOURCE_DIR}/src/luajit.exe
 )
-set(MEGA_LUAJIT_LIB ${MEGA_LUAJIT_BUILD_BAT}/src/lua51.lib)
-set(MEGA_LUAJIT_DLL ${MEGA_LUAJIT_BUILD_BAT}/src/lua51.dll)
 set(MEGA_LUAJIT_INCLUDE ${MEGA_LUAJIT_SOURCE_DIR}/src)
 
+# native.lua
+set(NATIVE_DEPENDS "")
 if (NOT LUA_EXE)
-	set(LUA_EXE ${MEGA_LUAJIT_BUILD_BAT}/src/luajit.exe)
+	set(NATIVE_DEPENDS luajit)
 endif()
 
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/native.lua
+	MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/inc/natives.h ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_native.lua
+	COMMAND "${LUA_EXE}" ARGS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_native.lua" "${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/inc/natives.h" "${CMAKE_CURRENT_BINARY_DIR}/native.lua"
+	DEPENDS ${NATIVE_DEPENDS}
+	VERBATIM
+)
+
+add_custom_target(native SOURCES ${CMAKE_CURRENT_BINARY_DIR}/native.lua)
+
+# LJ.asi
+add_library(ljscripthook MODULE src/main.cpp)
+add_dependencies(ljscripthook luajit native)
+target_link_libraries(ljscripthook ${MEGA_LUAJIT_LIB} ${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/lib/ScriptHookV.lib)
+set_target_properties(ljscripthook PROPERTIES PREFIX "" OUTPUT_NAME "LJ" SUFFIX ".asi")
+
+# install
+install(TARGETS ljscripthook DESTINATION .)
+install(PROGRAMS ${MEGA_LUAJIT_DLL} DESTINATION .)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/native.lua scripts/main.lua DESTINATION ljscripts)
