@@ -231,14 +231,26 @@ local function parseFunction(namespace, line)
 			io.write("\tScriptHookV.nativePush64(union.value)\n")
 		-- Is float?
 		elseif v.type == "float" then
-			-- union.f = arg
-			io.write("\tunion.f = ", v.name, "\n")
+			if v.pointer and v.out then
+				-- union.ptr = floats + <index>
+				io.write("\tunion.ptr = floats + ", v.index, "\n")
+			else
+				-- union.f = arg
+				io.write("\tunion.f = ", v.name, "\n")
+			end
+
 			-- ScriptHookV.nativePush64(union.value)
 			io.write("\tScriptHookV.nativePush64(union.value)\n")
 		-- Is int?
 		elseif v.type == "int" then
-			-- union.i = arg
-			io.write("\tunion.i = ", v.name, "\n")
+			if v.pointer and v.out then
+				-- union.ptr = ints + <index>
+				io.write("\tunion.ptr = ints + ", v.index, "\n")
+			else
+				-- union.i = arg
+				io.write("\tunion.i = ", v.name, "\n")
+			end
+
 			-- ScriptHookV.nativePush64(union.value)
 			io.write("\tScriptHookV.nativePush64(union.value)\n")
 		-- Is boolean?
@@ -261,13 +273,14 @@ local function parseFunction(namespace, line)
 		end
 	end
 
+	-- Return value
 	if ret == "void" or ret == "Void" then
 		-- ScriptHookV.nativeCall()
-		io.write("\tScriptHookV.nativeCall()\n")
+		io.write("\tScriptHookV.nativeCall()")
 
 		if #retVals > 0 then
 			-- return
-			io.write("\treturn ")
+			io.write("\n\treturn ")
 		end
 	else
 		-- union.value = ScriptHookV.nativeCall()[0]; [0] because it's pointer
@@ -303,6 +316,30 @@ local function parseFunction(namespace, line)
 			-- FIXME: return <type>
 			io.write("error(\"FIXME: return ", ret, "\")")
 		end
+
+		if #retVals > 0 then
+			-- ,
+			io.write(", ")
+		end
+	end
+
+	-- Additional return types
+	if #retVals > 0 then
+		local finalRets = {}
+		for i, v in ipairs(retVals) do
+			if v.type == "int" then
+				-- ints[<index>]
+				finalRets[i] = "ints["..v.index.."]"
+			elseif v.type == "float" then
+				-- floats[<index>]
+				finalRets[i] = "floats["..v.index.."]"
+			else
+				-- error("FIXME: return <type>")
+				finalRets[i] = "error(\"FIXME: return "..v.type.."\")"
+			end
+		end
+
+		io.write(table.concat(finalRets, ", "))
 	end
 
 	io.write("\nend\n\n")
