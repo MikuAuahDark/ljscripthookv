@@ -83,6 +83,7 @@ io.write [=[
 local ffi = require("ffi")
 local ScriptHookV = ffi.load("ScriptHookV")
 _G.ScriptHookV = ScriptHookV
+package.loaded.ScriptHookV = ScriptHookV
 
 ffi.cdef[[
 ]=]

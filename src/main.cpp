@@ -91,21 +91,25 @@ static void keyboardHandler(DWORD key, WORD repeats, BYTE scanCode, BOOL isExten
 
 			if (lua_pcall(L, 7, 0, 2))
 			{
-				logDebug(lua_tostring(L, -1));
 				logDebug("Error when executing script at keyboard handler " + scripts.first);
+				logDebug(lua_tostring(L, -1));
 			}
 		}
 		
-		lua_settop(L, 0);
+		lua_pop(L, 3);
+		// Perfectly balanced as all things should be
+		assert(lua_gettop(L) == 0);
 	}
 }
 
 static lua_State *newLuaState(const std::string &path)
 {
+	logDebug("Attempt to load " + path);
+
 	lua_State *L = luaL_newstate();
 	luaL_openlibs(L);
 
-	// Push traceback function
+	// Push traceback function (index 1)
 	lua_pushcfunction(L, traceback);
 
 	// Load script file (index 2)
@@ -117,20 +121,34 @@ static lua_State *newLuaState(const std::string &path)
 	}
 
 	// Execute main.lua, stack is unchanged
-	luaL_dofile(L, "ljscripts\\main.lua");
+	if (luaL_loadfile(L, "ljscripts\\main.lua") || lua_pcall(L, 0, 0, 1))
+	{
+		logDebug("Error when loading script " + path);
+		logDebug(lua_tostring(L, -1));
+		lua_close(L);
+		return nullptr;
+	}
 
-	// Execute script file. The resulting script table is at index 2
+	// Execute script file. Script table is at index 2
 	if (lua_pcall(L, 0, 1, 1))
 	{
-		logDebug(lua_tostring(L, -1));
 		logDebug("Error when loading script " + path);
+		logDebug(lua_tostring(L, -1));
+		lua_close(L);
+		return nullptr;
+	}
+	
+	if (lua_isnil(L, -1))
+	{
+		logDebug("Error when loading script " + path);
+		logDebug("Missing script table");
 		lua_close(L);
 		return nullptr;
 	}
 
 	// Store it at random script index
 	lua_pushinteger(L, getMainScriptIndex(L));
-	lua_pushvalue(L, -2);
+	lua_pushvalue(L, 2);
 	lua_rawset(L, LUA_REGISTRYINDEX);
 
 	// Check update function existence
@@ -146,60 +164,61 @@ static lua_State *newLuaState(const std::string &path)
 	lua_pop(L, 3); // remove update function, script table, and debug.traceback
 
 	// Setup package.path
-	lua_pushstring(L, "package");
-	lua_rawget(L, LUA_GLOBALSINDEX); // package = index 1
-	lua_pushstring(L, "path"); // path = index 2
-	lua_pushvalue(L, -1); // path = index 3
-	lua_rawget(L, -3); // package.path = index 3
-	lua_pushstring(L, "ljscripts/libs/?.lua;");
-	lua_concat(L, 2); // package.path concat = 3
-	lua_rawset(L, -3);
+	luaL_dostring(L, "package.path = package.path..\"ljscripts/libs/?.lua;\"");
 
 	// Perfectly balanced as all things should be
 	assert(lua_gettop(L) == 0);
+	logDebug("success");
 	return L;
 }
 
 static void scriptMain()
 {
-	std::vector<std::string> forRemoval;
-
-	// Iterate all loaded scripts
-	for (std::pair<std::string, lua_State *> scripts: luaState)
+	while (true)
 	{
-		lua_State *L = scripts.second;
+		std::vector<std::string> forRemoval;
 
-		// Get current script table (index 1)
-		lua_pushinteger(L, getMainScriptIndex(L));
-		lua_rawget(L, LUA_REGISTRYINDEX);
-
-		// Get traceback function (index 2)
-		lua_pushcfunction(L, traceback);
-
-		// Get update function (index 3)
-		lua_pushstring(L, "update");
-		lua_rawget(L, 1);
-
-		// TODO: Pass delta Time?
-		if (lua_pcall(L, 0, 0, 2))
+		// Iterate all loaded scripts
+		for (std::pair<std::string, lua_State *> scripts: luaState)
 		{
-			logDebug(lua_tostring(L, -1));
-			logDebug("Error when executing script " + scripts.first);
-			forRemoval.push_back(scripts.first);
+			lua_State *L = scripts.second;
+			assert(lua_gettop(L) == 0);
+
+			// Get current script table (index 1)
+			lua_pushinteger(L, getMainScriptIndex(L));
+			lua_rawget(L, LUA_REGISTRYINDEX);
+
+			// Push traceback function (index 2)
+			lua_pushcfunction(L, traceback);
+
+			// Get update function (index 3)
+			lua_pushstring(L, "update");
+			lua_rawget(L, 1);
+
+			// Call function. stack is now 2
+			if (lua_pcall(L, 0, 0, 2))
+			{
+				logDebug("Error when executing script " + scripts.first);
+				logDebug(lua_tostring(L, -1));
+				forRemoval.push_back(scripts.first);
+				lua_pop(L, 1);
+			}
+
+			lua_pop(L, 2);
+			// Perfectly balanced as all things should be
+			assert(lua_gettop(L) == 0);
 		}
 
-		lua_settop(L, 0);
-	}
+		// Remove scripts which is scheduled for removal
+		for (const std::string &removal: forRemoval)
+		{
+			lua_close(luaState[removal]);
+			luaState.erase(removal);
+		}
 
-	// Remove scripts which is scheduled for removal
-	for (const std::string &removal: forRemoval)
-	{
-		lua_close(luaState[removal]);
-		luaState.erase(removal);
+		// Script wait
+		scriptWait(0);
 	}
-
-	// Script wait
-	scriptWait(0);
 }
 
 BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
@@ -238,6 +257,7 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 			// Redirect logs
 			freopen("ljscripts\\log.txt", "ab", stdout);
 			setvbuf(stdout, nullptr, _IONBF, 0);
+			logDebug("=== LJScript starts ===");
 
 			do
 			{
