@@ -20,6 +20,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <ctime>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -34,14 +35,69 @@ static std::unordered_map<std::string, lua_State*> luaState;
 
 inline uint32_t getMainScriptIndex(lua_State *L)
 {
-	union {lua_State *a; uint64_t b;} c = {L};
-	return uint32_t((c.b >> 32ULL) ^ (c.b & UINT32_MAX));
+	uint64_t value = (uint64_t) L;
+	return uint32_t((value >> 32ULL) ^ (value & UINT32_MAX));
 }
 
 static void logDebug(const std::string &str)
 {
-	OutputDebugStringA((str + '\n').c_str());
-	printf("%s\n", str.c_str());
+	time_t timestamp = time(nullptr);
+	tm *timeinfo = localtime(&timestamp);
+
+	char timebuf[256];
+	std::string bufstr = std::string(timebuf, strftime(timebuf, 256, "[%H:%M:%S] ", timeinfo));
+	std::string message = bufstr + str + '\n';
+
+	OutputDebugStringA(message.c_str());
+	fwrite(message.data(), 1, message.length(), stdout);
+}
+
+static int traceback(lua_State *L)
+{
+	if (!lua_isstring(L, 1))  /* 'message' not a string? */
+		return 1;  /* keep it intact */
+
+	luaL_traceback(L, L, lua_tostring(L, 1), 1);
+	return 1;
+}
+
+static void keyboardHandler(DWORD key, WORD repeats, BYTE scanCode, BOOL isExtended, BOOL isWithAlt, BOOL wasDownBefore, BOOL isUpNow)
+{
+	// Iterate all loaded scripts
+	for (std::pair<std::string, lua_State *> scripts: luaState)
+	{
+		lua_State *L = scripts.second;
+
+		// Get current script table (index 1)
+		lua_pushinteger(L, getMainScriptIndex(L));
+		lua_rawget(L, LUA_REGISTRYINDEX);
+
+		// Push traceback function
+		lua_pushcfunction(L, traceback);
+
+		// Get keyboardHandler function (index 3)
+		lua_pushstring(L, "keyboardHandler");
+		lua_rawget(L, 1);
+
+		if (lua_isfunction(L, -1))
+		{
+			lua_pushinteger(L, key);
+			lua_pushinteger(L, repeats);
+			lua_pushinteger(L, scanCode);
+			lua_pushboolean(L, isExtended);
+			lua_pushboolean(L, isWithAlt);
+			lua_pushboolean(L, wasDownBefore);
+			lua_pushboolean(L, isUpNow);
+
+			if (lua_pcall(L, 7, 0, 2))
+			{
+				logDebug(lua_tostring(L, -1));
+				logDebug("Error when executing script at keyboard handler " + scripts.first);
+			}
+		}
+		
+		lua_settop(L, 0);
+	}
 }
 
 static lua_State *newLuaState(const std::string &path)
@@ -49,14 +105,8 @@ static lua_State *newLuaState(const std::string &path)
 	lua_State *L = luaL_newstate();
 	luaL_openlibs(L);
 
-	// Load debug.traceback at REGISTRY 0 and leave it at index 1
-	lua_pushstring(L, "debug");
-	lua_rawget(L, LUA_GLOBALSINDEX); // debug table = 1
-	lua_pushstring(L, "traceback");
-	lua_rawget(L, -2); // traceback function = index 2
-	lua_remove(L, 1); // remove debug table; traceback function = index 1
-	lua_pushvalue(L, -1); // copy traceback function = index 2
-	lua_rawseti(L, LUA_REGISTRYINDEX, 0); // now traceback function = index 1
+	// Push traceback function
+	lua_pushcfunction(L, traceback);
 
 	// Load script file (index 2)
 	if (luaL_loadfile(L, path.c_str()))
@@ -66,7 +116,7 @@ static lua_State *newLuaState(const std::string &path)
 		return nullptr;
 	}
 
-	// Execute main.lua
+	// Execute main.lua, stack is unchanged
 	luaL_dofile(L, "ljscripts\\main.lua");
 
 	// Execute script file. The resulting script table is at index 2
@@ -124,7 +174,7 @@ static void scriptMain()
 		lua_rawget(L, LUA_REGISTRYINDEX);
 
 		// Get traceback function (index 2)
-		lua_rawgeti(L, LUA_REGISTRYINDEX, 0);
+		lua_pushcfunction(L, traceback);
 
 		// Get update function (index 3)
 		lua_pushstring(L, "update");
@@ -138,11 +188,7 @@ static void scriptMain()
 			forRemoval.push_back(scripts.first);
 		}
 
-		// remove update function, traceback function, and script table
-		lua_pop(L, 3);
-
-		// Perfectly balanced as all things should be
-		assert(lua_gettop(L) == 0);
+		lua_settop(L, 0);
 	}
 
 	// Remove scripts which is scheduled for removal
@@ -189,6 +235,10 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 				return 0;
 			}
 
+			// Redirect logs
+			freopen("ljscripts\\log.txt", "ab", stdout);
+			setvbuf(stdout, nullptr, _IONBF, 0);
+
 			do
 			{
 				if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
@@ -221,6 +271,7 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 
 				luaState.clear();
 				scriptUnregister(hInstance);
+
 				init = false;
 			}
 			break;

@@ -82,6 +82,7 @@ io.write("-- Generated at ", os.date("!%d/%m/%Y %H:%M:%S UTC\n\n"))
 io.write [=[
 local ffi = require("ffi")
 local ScriptHookV = ffi.load("ScriptHookV")
+_G.ScriptHookV = ScriptHookV
 
 ffi.cdef[[
 ]=]
