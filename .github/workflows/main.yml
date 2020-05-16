@@ -1,0 +1,26 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - name: Download ScriptHookV SDK
+      shell: powershell
+      run: Invoke-WebRequest -Uri http://www.dev-c.com/files/ScriptHookV_SDK_1.0.617.1a.zip -OutFile ScriptHookV.zip
+    - name: Extract ScriptHookV SDK
+      shell: cmd
+      run: mkdir ScriptHookSDK && 7z x -oScriptHookSDK -r ScriptHookV.zip
+    - name: Configure
+      shell: cmd
+      run: cmake -Bbuild -H. -A x64 -DCMAKE_INSTALL_PREFIX=%CD%\install
+    - name: Build
+      shell: cmd
+      run: cmake --build build --config Release --target install
+    - name: Artifact
+      uses: actions/upload-artifact@v1
+      with:
+        name: ljscripthook
+        path: install
