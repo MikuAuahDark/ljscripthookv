@@ -21,6 +21,7 @@
 #include <cassert>
 #include <cstdint>
 #include <ctime>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -32,6 +33,7 @@
 #include "../LuaJIT/src/lua.hpp"
 
 static std::unordered_map<std::string, lua_State*> luaState;
+static FILE *logFile = nullptr;
 
 inline uint32_t getMainScriptIndex(lua_State *L)
 {
@@ -48,8 +50,10 @@ static void logDebug(const std::string &str)
 	std::string bufstr = std::string(timebuf, strftime(timebuf, 256, "[%H:%M:%S] ", timeinfo));
 	std::string message = bufstr + str + '\n';
 
-	OutputDebugStringA(message.c_str());
-	fwrite(message.data(), 1, message.length(), stdout);
+	OutputDebugStringA(("[ljscripthookv] " + message).c_str());
+
+	if (logFile)
+		fwrite(message.data(), 1, message.length(), logFile);
 }
 
 static int traceback(lua_State *L)
@@ -59,6 +63,37 @@ static int traceback(lua_State *L)
 
 	luaL_traceback(L, L, lua_tostring(L, 1), 1);
 	return 1;
+}
+
+static int printToLog(lua_State* L)
+{
+	int nargs = lua_gettop(L);
+
+	lua_getglobal(L, "tostring");
+
+	std::stringstream outstring;
+
+	for (int i = 1; i <= nargs; i++)
+	{
+		// Call tostring(arg) and leave the result on the top of the stack.
+		lua_pushvalue(L, -1);
+		lua_pushvalue(L, i);
+		lua_call(L, 1, 1);
+
+		const char *s = lua_tostring(L, -1);
+		if (s == nullptr)
+			return luaL_error(L, "'tostring' must return a string to 'print'");
+
+		if (i > 1)
+			outstring << "\t";
+
+		outstring << s;
+
+		lua_pop(L, 1); // Pop the result of tostring(arg).
+	}
+
+	logDebug(outstring.str());
+	return 0;
 }
 
 static void keyboardHandler(DWORD key, WORD repeats, BYTE scanCode, BOOL isExtended, BOOL isWithAlt, BOOL wasDownBefore, BOOL isUpNow)
@@ -108,6 +143,9 @@ static lua_State *newLuaState(const std::string &path)
 
 	lua_State *L = luaL_newstate();
 	luaL_openlibs(L);
+
+	// Setup package.path
+	luaL_dostring(L, "package.path = package.path..\"ljscripts/libs/?.lua;\"");
 
 	// Push traceback function (index 1)
 	lua_pushcfunction(L, traceback);
@@ -162,9 +200,6 @@ static lua_State *newLuaState(const std::string &path)
 		return nullptr;
 	}
 	lua_pop(L, 3); // remove update function, script table, and debug.traceback
-
-	// Setup package.path
-	luaL_dostring(L, "package.path = package.path..\"ljscripts/libs/?.lua;\"");
 
 	// Perfectly balanced as all things should be
 	assert(lua_gettop(L) == 0);
@@ -254,9 +289,15 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 				return 0;
 			}
 
-			// Redirect logs
-			freopen("ljscripts\\log.txt", "ab", stdout);
-			setvbuf(stdout, nullptr, _IONBF, 0);
+			// Open log file
+			//freopen("ljscripts\\log.txt", "ab", stdout);
+			logFile = fopen("ljscripts\\log.txt", "ab");
+
+			if (logFile)
+				setvbuf(logFile, nullptr, _IONBF, 0);
+			else
+				logFile = stdout;
+
 			logDebug("=== LJScript starts ===");
 
 			do
@@ -275,10 +316,14 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 			if (luaState.size() > 0)
 			{
 				scriptRegister(hInstance, scriptMain);
+				//keyboardHandlerRegister(keyboardHandler);
 				init = true;
 			}
 			else
 				logDebug("No scripts loaded!");
+
+			if (!init && logFile != stdout)
+				fclose(logFile);
 
 			return (BOOL) init;
 		}
@@ -291,6 +336,10 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 
 				luaState.clear();
 				scriptUnregister(hInstance);
+				//keyboardHandlerUnregister(keyboardHandler);
+
+				if (logFile != stdout)
+					fclose(logFile);
 
 				init = false;
 			}

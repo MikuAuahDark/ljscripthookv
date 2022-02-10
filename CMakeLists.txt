@@ -151,3 +151,4 @@ set_target_properties(ljscripthook PROPERTIES PREFIX "" OUTPUT_NAME "LJ" SUFFIX 
 install(TARGETS ljscripthook DESTINATION .)
 install(PROGRAMS ${MEGA_LUAJIT_DLL} DESTINATION .)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/native.lua scripts/main.lua DESTINATION ljscripts)
+install(FILES scripts/keyboard.lua DESTINATION ljscripts/libs)
