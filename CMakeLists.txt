@@ -4,13 +4,13 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
 	message(FATAL_ERROR "Prevented in-tree build.")
 endif()
 
-# Check ScriptHookV.lib and natives.h existence
+# Check ScriptHookV.lib and main.h existence
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/lib/ScriptHookV.lib")
 	message(FATAL_ERROR "Missing ScriptHookV.lib!")
 endif()
 
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/inc/natives.h")
-	message(FATAL_ERROR "Missing natives.h!")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/inc/main.h")
+	message(FATAL_ERROR "Missing main.h!")
 endif()
 
 # For LuaJIT compilation
@@ -102,8 +102,8 @@ endif()
 # Copy LuaJIT source to binary dir. LuaJIT builds in-source,
 # and we don't want to modify the original source tree, so
 # we copy it.
-set(MEGA_LUAJIT_SOURCE_DIR ${CMAKE_BINARY_DIR}/LuaJIT)
-file(COPY LuaJIT DESTINATION ${CMAKE_BINARY_DIR})
+set(MEGA_LUAJIT_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/LuaJIT)
+file(COPY LuaJIT DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 set(MEGA_LUAJIT_BUILD_BAT "
 	@echo off
 	call \"${MEGA_MSVC_VCVARSALL_BAT}\" ${MEGA_MSVC_VCVARSALL_BAT_ARG}
@@ -128,10 +128,11 @@ set(MEGA_LUAJIT_INCLUDE ${MEGA_LUAJIT_SOURCE_DIR}/src)
 set(NATIVE_DEPENDS "")
 if (NOT LUA_EXE)
 	set(NATIVE_DEPENDS luajit)
+	set(LUA_EXE "${CMAKE_CURRENT_BINARY_DIR}/LuaJIT/src/luajit.exe")
 endif()
 
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/native.lua
-	MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/inc/natives.h ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_native.lua
+	MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/natives.h ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_native.lua
 	COMMAND "${LUA_EXE}" ARGS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_native.lua" "${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/inc/natives.h" "${CMAKE_CURRENT_BINARY_DIR}/native.lua"
 	DEPENDS ${NATIVE_DEPENDS}
 	VERBATIM
@@ -142,6 +143,7 @@ add_custom_target(native SOURCES ${CMAKE_CURRENT_BINARY_DIR}/native.lua)
 # LJ.asi
 add_library(ljscripthook MODULE src/main.cpp)
 add_dependencies(ljscripthook luajit native)
+target_include_directories(ljscripthook PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/inc)
 target_link_libraries(ljscripthook ${MEGA_LUAJIT_LIB} ${CMAKE_CURRENT_SOURCE_DIR}/ScriptHookSDK/lib/ScriptHookV.lib)
 set_target_properties(ljscripthook PROPERTIES PREFIX "" OUTPUT_NAME "LJ" SUFFIX ".asi")
 

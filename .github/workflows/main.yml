@@ -7,6 +7,8 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v2
+      with:
+        submodules: true
     - name: Download ScriptHookV SDK
       shell: powershell
       run: Invoke-WebRequest -Uri http://www.dev-c.com/files/ScriptHookV_SDK_1.0.617.1a.zip -OutFile ScriptHookV.zip
