@@ -21,10 +21,13 @@
 #include <cassert>
 #include <cstdint>
 #include <ctime>
+
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <queue>
 
 #include "check64.cpp"
 
@@ -32,14 +35,31 @@
 
 #include "../LuaJIT/src/lua.hpp"
 
-static std::unordered_map<std::string, lua_State*> luaState;
-static FILE *logFile = nullptr;
+constexpr const char *UPDATE_FUNCTION = "update";
+constexpr const char *KEYHAND_FUNCTION = "keyboardHandler";
+constexpr uint32_t MAX_CONSECUTIVE_ERROR = 10;
 
-inline uint32_t getMainScriptIndex(lua_State *L)
+struct KeyboardInput
 {
-	uint64_t value = (uint64_t) L;
-	return uint32_t((value >> 32ULL) ^ (value & UINT32_MAX));
-}
+	DWORD key;
+	WORD repeats;
+	BYTE scanCode;
+	BOOL isExtended;
+	BOOL isWithAlt;
+	BOOL wasDownBefore;
+	BOOL isUpNow;
+};
+
+struct LuaStateInfo
+{
+	lua_State *L;
+	std::queue<KeyboardInput> *key;
+	std::mutex *keyMutex;
+	uint32_t errorCount;
+};
+
+static std::unordered_map<std::string, LuaStateInfo*> luaState;
+static FILE *logFile = nullptr;
 
 static void logDebug(const std::string &str)
 {
@@ -99,45 +119,34 @@ static int printToLog(lua_State* L)
 static void keyboardHandler(DWORD key, WORD repeats, BYTE scanCode, BOOL isExtended, BOOL isWithAlt, BOOL wasDownBefore, BOOL isUpNow)
 {
 	// Iterate all loaded scripts
-	for (std::pair<std::string, lua_State *> scripts: luaState)
+	for (std::pair<const std::string, LuaStateInfo*> &scripts: luaState)
 	{
-		lua_State *L = scripts.second;
+		// Apparently keyboard handler thread is not same as the script thread
+		LuaStateInfo *info = scripts.second;
 
-		// Get current script table (index 1)
-		lua_pushinteger(L, getMainScriptIndex(L));
-		lua_rawget(L, LUA_REGISTRYINDEX);
-
-		// Push traceback function
-		lua_pushcfunction(L, traceback);
-
-		// Get keyboardHandler function (index 3)
-		lua_pushstring(L, "keyboardHandler");
-		lua_rawget(L, 1);
-
-		if (lua_isfunction(L, -1))
+		if (info->key)
 		{
-			lua_pushinteger(L, key);
-			lua_pushinteger(L, repeats);
-			lua_pushinteger(L, scanCode);
-			lua_pushboolean(L, isExtended);
-			lua_pushboolean(L, isWithAlt);
-			lua_pushboolean(L, wasDownBefore);
-			lua_pushboolean(L, isUpNow);
-
-			if (lua_pcall(L, 7, 0, 2))
-			{
-				logDebug("Error when executing script at keyboard handler " + scripts.first);
-				logDebug(lua_tostring(L, -1));
-			}
+			std::lock_guard<std::mutex> lock(*info->keyMutex);
+			info->key->push({key, repeats, scanCode, isExtended, isWithAlt, wasDownBefore, isUpNow});
 		}
-		
-		lua_pop(L, 3);
-		// Perfectly balanced as all things should be
-		assert(lua_gettop(L) == 0);
 	}
 }
 
-static lua_State *newLuaState(const std::string &path)
+static int quitScript(lua_State* L)
+{
+	for (std::pair<const std::string, LuaStateInfo*>& scripts : luaState)
+	{
+		if (scripts.second->L == L)
+		{
+			scripts.second->errorCount = MAX_CONSECUTIVE_ERROR + 1;
+			break;
+		}
+	}
+
+	return 0;
+}
+
+static LuaStateInfo *newLuaState(const std::string &path)
 {
 	logDebug("Attempt to load " + path);
 
@@ -145,7 +154,7 @@ static lua_State *newLuaState(const std::string &path)
 	luaL_openlibs(L);
 
 	// Setup package.path
-	luaL_dostring(L, "package.path = package.path..\"ljscripts/libs/?.lua;\"");
+	luaL_dostring(L, "package.path = package.path..\"ljscripts/libs/?.lua;ljscripts/libs/?/init.lua\"");
 
 	// Push traceback function (index 1)
 	lua_pushcfunction(L, traceback);
@@ -184,14 +193,12 @@ static lua_State *newLuaState(const std::string &path)
 		return nullptr;
 	}
 
-	// Store it at random script index
-	lua_pushinteger(L, getMainScriptIndex(L));
-	lua_pushvalue(L, 2);
-	lua_rawset(L, LUA_REGISTRYINDEX);
+	// Remove traceback function. Script table is now on top.
+	lua_remove(L, 1);
 
 	// Check update function existence
-	lua_pushstring(L, "update");
-	lua_rawget(L, 2);
+	lua_pushstring(L, UPDATE_FUNCTION);
+	lua_rawget(L, 1);
 	if (lua_isnil(L, -1))
 	{
 		logDebug("Error when loading script " + path);
@@ -199,12 +206,49 @@ static lua_State *newLuaState(const std::string &path)
 		lua_close(L);
 		return nullptr;
 	}
-	lua_pop(L, 3); // remove update function, script table, and debug.traceback
 
+	// Remove update function
+	lua_pop(L, 1);
+
+	// Create new state info
+	LuaStateInfo *info = new LuaStateInfo();
+	info->L = L;
+	info->key = nullptr;
+	info->keyMutex = nullptr;
+	info->errorCount = 0;
+
+	// Check keyboard handler existence
+	lua_pushstring(L, KEYHAND_FUNCTION);
+	lua_rawget(L, 1);
+	if (lua_isfunction(L, -1))
+	{
+		info->key = new std::queue<KeyboardInput>;
+		info->keyMutex = new std::mutex();
+	}
+
+	// Register quitScript function
+	lua_pushcfunction(L, quitScript);
+	lua_setglobal(L, "quitScript");
+
+	lua_pop(L, 1);
 	// Perfectly balanced as all things should be
-	assert(lua_gettop(L) == 0);
+	assert(lua_gettop(L) == 1);
 	logDebug("success");
-	return L;
+	return info;
+}
+
+static void closeLuaState(LuaStateInfo* info)
+{
+	if (info->keyMutex)
+	{
+		info->keyMutex->lock();
+		info->keyMutex->unlock();
+	}
+
+	lua_close(info->L);
+	delete info->key;
+	delete info->keyMutex;
+	delete info;
 }
 
 static void scriptMain()
@@ -214,41 +258,84 @@ static void scriptMain()
 		std::vector<std::string> forRemoval;
 
 		// Iterate all loaded scripts
-		for (std::pair<std::string, lua_State *> scripts: luaState)
+		for (std::pair<const std::string, LuaStateInfo*> &scripts: luaState)
 		{
-			lua_State *L = scripts.second;
-			assert(lua_gettop(L) == 0);
+			LuaStateInfo *info = scripts.second;
+			lua_State *L = info->L;
+			bool error = false;
 
-			// Get current script table (index 1)
-			lua_pushinteger(L, getMainScriptIndex(L));
-			lua_rawget(L, LUA_REGISTRYINDEX);
+			// Script table is already at index 1
+			assert(lua_gettop(L) == 1);
 
 			// Push traceback function (index 2)
 			lua_pushcfunction(L, traceback);
 
+			if (info->key)
+			{
+				std::lock_guard<std::mutex> lock(*info->keyMutex);
+
+				while (!info->key->empty())
+				{
+					KeyboardInput input = info->key->front();
+
+					// Get keyboard handler function (index 3)
+					lua_pushstring(L, KEYHAND_FUNCTION);
+					lua_rawget(L, 1);
+					lua_pushinteger(L, input.key);
+					lua_pushinteger(L, input.repeats);
+					lua_pushinteger(L, input.scanCode);
+					lua_pushboolean(L, input.isExtended);
+					lua_pushboolean(L, input.isWithAlt);
+					lua_pushboolean(L, input.wasDownBefore);
+					lua_pushboolean(L, input.isUpNow);
+
+					if (lua_pcall(L, 7, 0, 2))
+					{
+						logDebug("Error when executing keyboard handler of script " + scripts.first);
+						logDebug(lua_tostring(L, -1));
+						lua_pop(L, 1);
+						error = true;
+					}
+
+					info->key->pop();
+				}
+			}
+
 			// Get update function (index 3)
-			lua_pushstring(L, "update");
+			lua_pushstring(L, UPDATE_FUNCTION);
 			lua_rawget(L, 1);
 
 			// Call function. stack is now 2
 			if (lua_pcall(L, 0, 0, 2))
 			{
-				logDebug("Error when executing script " + scripts.first);
+				logDebug("Error when executing update function of script " + scripts.first);
 				logDebug(lua_tostring(L, -1));
-				forRemoval.push_back(scripts.first);
 				lua_pop(L, 1);
+				error = true;
 			}
 
-			lua_pop(L, 2);
-			// Perfectly balanced as all things should be
-			assert(lua_gettop(L) == 0);
+			// Remove traceback function
+			lua_pop(L, 1);
+			assert(lua_gettop(L) == 1);
+
+			if (info->errorCount >= MAX_CONSECUTIVE_ERROR)
+				forRemoval.push_back(scripts.first);
+			else if (error)
+				info->errorCount++;
+			else
+				info->errorCount = 0;
 		}
 
 		// Remove scripts which is scheduled for removal
 		for (const std::string &removal: forRemoval)
 		{
-			lua_close(luaState[removal]);
-			luaState.erase(removal);
+			LuaStateInfo *info = luaState[removal];
+
+			if (info)
+			{
+				luaState.erase(removal);
+				closeLuaState(info);
+			}
 		}
 
 		// Script wait
@@ -305,9 +392,9 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 				if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
 					continue;
 				
-				lua_State *L = newLuaState(std::string("ljscripts\\addins\\") + findData.cFileName);
-				if (L)
-					luaState[findData.cFileName] = L;
+				LuaStateInfo *info = newLuaState(std::string("ljscripts\\addins\\") + findData.cFileName);
+				if (info)
+					luaState[findData.cFileName] = info;
 				else
 					logDebug(std::string("Unable to load ") + findData.cFileName);
 			} while (FindNextFileA(dir, &findData) != 0);
@@ -316,7 +403,7 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 			if (luaState.size() > 0)
 			{
 				scriptRegister(hInstance, scriptMain);
-				//keyboardHandlerRegister(keyboardHandler);
+				keyboardHandlerRegister(keyboardHandler);
 				init = true;
 			}
 			else
@@ -331,12 +418,12 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 		{
 			if (init)
 			{
-				for (std::pair<std::string, lua_State *> scripts: luaState)
-					lua_close(scripts.second);
+				for (std::pair<const std::string, LuaStateInfo*> scripts: luaState)
+					closeLuaState(scripts.second);
 
 				luaState.clear();
 				scriptUnregister(hInstance);
-				//keyboardHandlerUnregister(keyboardHandler);
+				keyboardHandlerUnregister(keyboardHandler);
 
 				if (logFile != stdout)
 					fclose(logFile);
