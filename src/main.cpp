@@ -193,7 +193,7 @@ static LuaStateInfo *newLuaState(const std::string &path)
 		return nullptr;
 	}
 
-	// Remove traceback function. Script table is now on top.
+	// Remove traceback function. Script table is now on index 1.
 	lua_remove(L, 1);
 
 	// Check update function existence

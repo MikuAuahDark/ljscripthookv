@@ -211,12 +211,26 @@ local union = ffi.new("enum WindowsVirtualKey[1]")
 local NOW_PERIOD = 100 -- ms
 local MAX_DOWN = 5000  -- ms
 
-function toVirtualKey(name)
+local function toVirtualKey(name)
 	union[0] = name
 	return tonumber(union[0])
 end
 
-function keyboardHandler(key, repeats, scanCode, isExtended, isWithAlt, wasDownBefore, isUpNow)
+local function resetKeyState(key)
+	if type(key) == "number" and key < 0 and key >= 255 then
+		return
+	elseif type(key) == "string" then
+		key = toVirtualKey(key)
+	end
+
+	local k = keyStates[key + 1]
+	k.time = 0ULL
+	k.isWithAlt = false
+	k.wasDownBefore = false
+	k.isUpNow = false
+end
+
+local function keyboardHandler(key, repeats, scanCode, isExtended, isWithAlt, wasDownBefore, isUpNow)
 	if key < 255 then
 		local k = keyStates[key + 1]
 		k.time = ffi.C.GetTickCount64()
@@ -226,7 +240,7 @@ function keyboardHandler(key, repeats, scanCode, isExtended, isWithAlt, wasDownB
 	end
 end
 
-function isKeyDown(key)
+local function isKeyDown(key)
 	if type(key) == "number" and key < 0 and key >= 255 then
 		return false
 	elseif type(key) == "string" then
@@ -237,7 +251,7 @@ function isKeyDown(key)
 	return ffi.C.GetTickCount64() < (k.time + MAX_DOWN) and (not k.isUpNow)
 end
 
-function isKeyJustUp(key, exclusive)
+local function isKeyJustUp(key, exclusive)
 	if type(key) == "number" and key < 0 and key >= 255 then
 		return false
 	elseif type(key) == "string" then
@@ -256,20 +270,6 @@ function isKeyJustUp(key, exclusive)
 	end
 
 	return result
-end
-
-function resetKeyState(key)
-	if type(key) == "number" and key < 0 and key >= 255 then
-		return
-	elseif type(key) == "string" then
-		key = toVirtualKey(key)
-	end
-
-	local k = keyStates[key + 1]
-	k.time = 0ULL
-	k.isWithAlt = false
-	k.wasDownBefore = false
-	k.isUpNow = false
 end
 
 for i = 1, 255 do
